@@ -14,9 +14,10 @@ import smtplib
 from email.message import EmailMessage
 from pathlib import Path
 
-from sales_engine import load_and_clean, calculate_kpis
+from sales_engine import load_and_clean, calculate_kpis, SchemaResolutionNeeded
 from ai_insights import get_insights
 from report_builder import build_pdf_report
+from schema_mapper import CANONICAL_FIELDS
 
 st.set_page_config(page_title="AI Sales Data Analyst Agent", page_icon="📊", layout="wide")
 
@@ -24,7 +25,7 @@ st.set_page_config(page_title="AI Sales Data Analyst Agent", page_icon="📊", l
 # Sidebar: data input + AI config
 # ---------------------------------------------------------------------------
 st.sidebar.title("📊 AI Sales Analyst Agent")
-st.sidebar.markdown("Upload your daily sales CSV, or use the bundled demo data.")
+st.sidebar.markdown("Upload **any** daily sales CSV — columns are auto-detected — or use the bundled demo data.")
 
 uploaded_file = st.sidebar.file_uploader("Upload sales CSV", type=["csv"])
 use_demo = st.sidebar.checkbox("Use demo dataset", value=uploaded_file is None)
@@ -51,15 +52,54 @@ if data_source is None:
     st.info("⬅️ Upload a CSV or check 'Use demo dataset' in the sidebar to begin.")
     st.stop()
 
+manual_mapping = st.session_state.get("manual_mapping")
+
 try:
-    with st.spinner("Cleaning data..."):
-        df, report = load_and_clean(data_source)
+    with st.spinner("Detecting columns and cleaning data..."):
+        df, report = load_and_clean(data_source, manual_mapping=manual_mapping)
+        st.session_state.pop("manual_mapping_pending", None)
+except SchemaResolutionNeeded as e:
+    st.warning(
+        f"Couldn't automatically recognize these fields: **{', '.join(e.unmapped)}**. "
+        "Map them to the matching columns from your file below."
+    )
+    raw_df_preview = pd.read_csv(data_source, nrows=5)
+    st.dataframe(raw_df_preview, use_container_width=True)
+
+    with st.form("manual_mapping_form"):
+        new_mapping = {}
+        # Pre-fill anything that auto-detection already got right
+        already_known = {f: f for f in CANONICAL_FIELDS if f not in e.unmapped and f in raw_df_preview.columns}
+        for field_name in CANONICAL_FIELDS:
+            if field_name in already_known:
+                new_mapping[field_name] = already_known[field_name]
+                continue
+            options = ["(none)"] + e.available_columns
+            choice = st.selectbox(f"Which column is **{field_name}**?", options, key=f"map_{field_name}")
+            if choice != "(none)":
+                new_mapping[field_name] = choice
+        submitted = st.form_submit_button("Apply mapping")
+        if submitted:
+            # Revenue is derivable, so don't hard-require it
+            required_for_submit = [f for f in CANONICAL_FIELDS if f != "Revenue"]
+            missing_after_manual = [f for f in required_for_submit if f not in new_mapping]
+            if missing_after_manual:
+                st.error(f"Still missing: {missing_after_manual}. Please map every field.")
+            else:
+                st.session_state["manual_mapping"] = new_mapping
+                st.rerun()
+    st.stop()
 except ValueError as e:
     st.error(f"Could not process this file: {e}")
-    st.caption("Required columns: OrderDate, Product, Region, SalesRep, Quantity, UnitPrice, Revenue")
     st.stop()
 
-kpis = calculate_kpis(df)
+kpis_unfiltered = calculate_kpis(df)
+
+if report.column_mapping_used and not manual_mapping:
+    with st.expander("🔎 Auto-detected column mapping"):
+        st.json(report.column_mapping_used)
+        if report.revenue_was_derived:
+            st.caption("Revenue was derived as Quantity × UnitPrice (not present in source file).")
 
 # ---------------------------------------------------------------------------
 # Header + cleaning report
@@ -74,6 +114,46 @@ with st.expander(f"🧹 Data cleaning report — {report.rows_in} rows in, {repo
     c3.metric("Missing values filled", sum(report.missing_filled.values()))
     if report.missing_filled:
         st.caption(f"Filled by column: {report.missing_filled}")
+
+# ---------------------------------------------------------------------------
+# Interactive filters — everything below (KPIs, charts, AI insights, PDF)
+# respects this filtered view, not just the charts.
+# ---------------------------------------------------------------------------
+st.subheader("🔍 Filters")
+f1, f2, f3 = st.columns([2, 1, 1])
+
+min_date, max_date = df["OrderDate"].min().date(), df["OrderDate"].max().date()
+with f1:
+    date_range = st.date_input(
+        "Date range", value=(min_date, max_date), min_value=min_date, max_value=max_date
+    )
+with f2:
+    region_options = sorted(df["Region"].unique().tolist())
+    selected_regions = st.multiselect("Region", region_options, default=region_options)
+with f3:
+    product_options = sorted(df["Product"].unique().tolist())
+    selected_products = st.multiselect("Product", product_options, default=product_options)
+
+# Apply filters
+filtered_df = df.copy()
+if isinstance(date_range, tuple) and len(date_range) == 2:
+    start, end = date_range
+    filtered_df = filtered_df[
+        (filtered_df["OrderDate"].dt.date >= start) & (filtered_df["OrderDate"].dt.date <= end)
+    ]
+if selected_regions:
+    filtered_df = filtered_df[filtered_df["Region"].isin(selected_regions)]
+if selected_products:
+    filtered_df = filtered_df[filtered_df["Product"].isin(selected_products)]
+
+if filtered_df.empty:
+    st.warning("No rows match the current filters. Adjust your selection above.")
+    st.stop()
+
+kpis = calculate_kpis(filtered_df)
+st.caption(f"Showing {len(filtered_df):,} of {len(df):,} rows based on current filters.")
+
+st.divider()
 
 # ---------------------------------------------------------------------------
 # KPI cards
@@ -100,6 +180,17 @@ with chart_col1:
     )
     daily["Date"] = pd.to_datetime(daily["Date"])
     fig_trend = px.line(daily, x="Date", y="Revenue", title="Daily Revenue Trend", markers=False)
+
+    anomalies = kpis.get("anomalies", [])
+    if anomalies:
+        anomaly_df = pd.DataFrame(anomalies)
+        anomaly_df["date"] = pd.to_datetime(anomaly_df["date"])
+        colors = anomaly_df["direction"].map({"spike": "green", "drop": "red"})
+        fig_trend.add_scatter(
+            x=anomaly_df["date"], y=anomaly_df["revenue"], mode="markers",
+            marker=dict(size=12, color=colors, symbol="star"),
+            name="Anomaly", showlegend=True,
+        )
     st.plotly_chart(fig_trend, use_container_width=True)
 
 with chart_col2:
@@ -128,17 +219,52 @@ with chart_col4:
 st.divider()
 
 # ---------------------------------------------------------------------------
+# Drill-down: inspect the actual transactions behind any product or region
+# ---------------------------------------------------------------------------
+st.subheader("🔬 Drill Down")
+dd1, dd2 = st.columns(2)
+with dd1:
+    drill_product = st.selectbox("Inspect a product", ["(all)"] + sorted(filtered_df["Product"].unique().tolist()))
+with dd2:
+    drill_region = st.selectbox("Inspect a region", ["(all)"] + sorted(filtered_df["Region"].unique().tolist()))
+
+drill_df = filtered_df.copy()
+if drill_product != "(all)":
+    drill_df = drill_df[drill_df["Product"] == drill_product]
+if drill_region != "(all)":
+    drill_df = drill_df[drill_df["Region"] == drill_region]
+
+dd_c1, dd_c2, dd_c3 = st.columns(3)
+dd_c1.metric("Matching orders", f"{len(drill_df):,}")
+dd_c2.metric("Revenue", f"{drill_df['Revenue'].sum():,.0f}")
+dd_c3.metric("Avg order value", f"{drill_df['Revenue'].mean():,.0f}" if len(drill_df) else "—")
+
+st.dataframe(
+    drill_df.sort_values("OrderDate", ascending=False).head(200),
+    use_container_width=True,
+    height=250,
+)
+if len(drill_df) > 200:
+    st.caption(f"Showing most recent 200 of {len(drill_df):,} matching rows.")
+
+st.divider()
+
+# ---------------------------------------------------------------------------
 # AI Insights
 # ---------------------------------------------------------------------------
 st.subheader("🤖 AI-Generated Insights")
 
-def _get_secret(key_name):
+def _get_secret_api_key():
+    """Safely read ANTHROPIC_API_KEY from secrets.toml if it exists.
+    st.secrets raises StreamlitSecretNotFoundError if no secrets file
+    exists at all (not just if the key is missing), so this must be
+    wrapped in try/except rather than using a plain .get()."""
     try:
-        return st.secrets.get(key_name, None)
+        return st.secrets.get("ANTHROPIC_API_KEY")
     except Exception:
         return None
 
-effective_key = api_key_input or _get_secret("ANTHROPIC_API_KEY")
+effective_key = api_key_input or _get_secret_api_key()
 
 with st.spinner("Generating insights..."):
     insights = get_insights(kpis, api_key=effective_key)
@@ -210,11 +336,10 @@ with export_col2:
                         server.send_message(msg)
 
                     st.success(f"Report emailed to {recipient}")
+                except KeyError:
+                    st.error("SMTP credentials not configured in Streamlit secrets.")
                 except Exception as e:
-                    if isinstance(e, KeyError) or "secret" in str(e).lower():
-                        st.error("SMTP credentials not configured in Streamlit secrets.")
-                    else:
-                        st.error(f"Email failed: {e}")
+                    st.error(f"Email failed: {e}")
 
 st.divider()
 st.caption("Built with Python, pandas, Streamlit, Plotly, and Claude AI.")

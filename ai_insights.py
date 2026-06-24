@@ -65,8 +65,12 @@ def generate_fallback_insights(kpis: dict) -> dict:
     Rule-based insight generator. No API, no network, no cost.
     Mirrors the same SUMMARY / KEY WINS / CONCERNS / RECOMMENDATION
     structure so the dashboard rendering code doesn't need branching logic.
+    Now references real statistical anomalies and trend direction, not
+    just static top/bottom rankings.
     """
     growth = kpis.get("wow_growth_pct")
+    trend = kpis.get("trend_pct_per_day")
+    anomalies = kpis.get("anomalies", [])
     top_products = kpis.get("top_products", {})
     by_region = kpis.get("by_region", {})
 
@@ -83,10 +87,14 @@ def generate_fallback_insights(kpis: dict) -> dict:
         if growth is not None else
         "Not enough weekly history yet to calculate week-over-week growth."
     )
+    trend_line = ""
+    if trend is not None:
+        direction = "trending up" if trend > 0.05 else "trending down" if trend < -0.05 else "roughly flat"
+        trend_line = f" The overall daily trend is {direction} ({trend:+.2f}%/day)."
 
     summary = (
         f"Total revenue across the period was {kpis.get('total_revenue', 0):,.2f} "
-        f"from {kpis.get('total_orders', 0):,} orders. {growth_line}"
+        f"from {kpis.get('total_orders', 0):,} orders. {growth_line}{trend_line}"
     )
 
     key_wins = [
@@ -96,15 +104,35 @@ def generate_fallback_insights(kpis: dict) -> dict:
 
     concerns = [
         f"- {weakest_region[0]} region is trailing the others in total revenue.",
-        f"- Average order value is {kpis.get('avg_order_value', 0):,.2f}; "
-        f"watch for declines if this trends down over time.",
     ]
+    if anomalies:
+        spike_days = [a for a in anomalies if a["direction"] == "spike"]
+        drop_days = [a for a in anomalies if a["direction"] == "drop"]
+        if drop_days:
+            worst = min(drop_days, key=lambda a: a["z_score"])
+            concerns.append(
+                f"- Unusual revenue drop detected on {worst['date']} "
+                f"({worst['revenue']:,.2f}, {abs(worst['z_score']):.1f} std dev below normal) — worth investigating."
+            )
+        if spike_days:
+            best = max(spike_days, key=lambda a: a["z_score"])
+            key_wins.append(
+                f"- Notable revenue spike on {best['date']} ({best['revenue']:,.2f}, "
+                f"{best['z_score']:.1f} std dev above normal)."
+            )
+    else:
+        concerns.append(
+            f"- Average order value is {kpis.get('avg_order_value', 0):,.2f}; "
+            f"watch for declines if this trends down over time."
+        )
 
     recommendation = (
         f"Consider reallocating marketing or staffing focus toward {weakest_region[0]} "
         f"region, and investigate what's driving {top_product_name}'s performance to "
         f"replicate it across other product lines."
     )
+    if anomalies:
+        recommendation += " Review the flagged anomaly date(s) above for a root cause before adjusting strategy."
 
     text = (
         f"SUMMARY: {summary}\n\n"

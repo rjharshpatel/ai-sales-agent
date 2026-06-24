@@ -9,43 +9,60 @@ downloadable PDF report — with zero manual analysis steps.
 ## Architecture
 
 ```
-CSV Upload
+CSV Upload (any schema)
+    │
+    ▼
+Schema Auto-Detection (schema_mapper.py)
+    - matches synonyms (Date/OrderDate/Transaction Date → OrderDate)
+    - derives Revenue from Quantity × UnitPrice if not present
+    - falls back to an interactive manual-mapping form if unsure
     │
     ▼
 Python ETL & Cleaning (sales_engine.py)
-    - mixed date format parsing
+    - mixed date format parsing (7+ formats tried)
     - duplicate removal
     - product-level median imputation for missing values
     │
     ▼
-KPI Calculation (sales_engine.py)
-    - revenue, growth %, top products, regional/rep breakdown
+KPI + Anomaly Calculation (sales_engine.py)
+    - revenue, growth %, linear trend slope, top products, regional/rep breakdown
+    - statistical anomaly detection (z-score > 2 on daily revenue)
+    │
+    ▼
+Interactive Filters (app.py)
+    - date range / region / product filters apply to every metric, chart,
+      and the AI insight text below — not just the charts
     │
     ▼
 AI Insight Generation (ai_insights.py)
-    - Claude API narrates the KPI summary
+    - Claude API narrates the KPI summary, including detected anomalies
     - Rule-based fallback if no API key / call fails (demo never breaks)
     │
     ▼
-Dashboard (app.py — Streamlit + Plotly)
+Dashboard (app.py — Streamlit + Plotly) + Drill-Down table
     │
     ▼
 PDF Report (report_builder.py — fpdf2) + optional Email (smtplib)
 ```
 
-**Key design decision:** the AI model never sees raw transaction rows — only
-the already-computed KPI dict. This keeps token cost low and prevents the
-classic failure mode of LLMs doing arithmetic badly. pandas computes; the AI
-explains.
+**Key design decisions:**
+- The AI model never sees raw transaction rows — only the already-computed
+  KPI dict. pandas computes; the AI explains.
+- Column names are auto-detected via synonym matching rather than hardcoded,
+  so the app works with CSVs from different sources/companies, not just the
+  exact demo schema.
+- Anomalies are detected statistically (z-score), not just "lowest day" —
+  this surfaces genuinely unusual events rather than restating rankings.
 
 ## Project structure
 
 ```
 ai-sales-agent/
 ├── app.py                  # Streamlit dashboard (main entry point)
-├── sales_engine.py          # ETL, cleaning, KPI calculation (no UI deps)
+├── sales_engine.py          # ETL, cleaning, KPI + anomaly calculation (no UI deps)
+├── schema_mapper.py         # Flexible column auto-detection for any sales CSV
 ├── ai_insights.py           # Claude API call + rule-based fallback
-├── report_builder.py        # PDF generation
+├── report_builder.py        # PDF generation (Unicode-safe)
 ├── generate_sample_data.py  # Creates the bundled demo dataset
 ├── data/sales_data.csv      # Demo dataset (generated)
 ├── requirements.txt

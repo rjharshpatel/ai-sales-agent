@@ -24,19 +24,41 @@ class SalesReportPDF(FPDF):
     def section_title(self, title: str):
         self.set_font("Helvetica", "B", 12)
         self.set_fill_color(235, 235, 245)
-        self.cell(0, 8, title, new_x="LMARGIN", new_y="NEXT", fill=True)
+        self.cell(0, 8, _pdf_safe(title), new_x="LMARGIN", new_y="NEXT", fill=True)
         self.ln(2)
 
     def kpi_row(self, label: str, value: str):
         self.set_font("Helvetica", "", 10)
-        self.cell(70, 7, label)
+        self.cell(70, 7, _pdf_safe(label))
         self.set_font("Helvetica", "B", 10)
-        self.cell(0, 7, value, new_x="LMARGIN", new_y="NEXT")
+        self.cell(0, 7, _pdf_safe(value), new_x="LMARGIN", new_y="NEXT")
 
     def body_text(self, text: str):
         self.set_font("Helvetica", "", 10)
-        self.multi_cell(0, 6, text)
+        self.multi_cell(0, 6, _pdf_safe(text))
         self.ln(2)
+
+
+# Helvetica (a core PDF font) only supports latin-1. AI-generated text and
+# our own f-strings can contain Unicode punctuation (em-dash, smart quotes,
+# sigma, etc.) that crashes rendering. Rather than fix call sites one
+# character at a time, sanitize centrally wherever text reaches the PDF.
+_UNICODE_REPLACEMENTS = {
+    "\u2014": "-",   # em dash
+    "\u2013": "-",   # en dash
+    "\u2018": "'", "\u2019": "'",   # smart single quotes
+    "\u201c": '"', "\u201d": '"',   # smart double quotes
+    "\u2026": "...",  # ellipsis
+    "\u03c3": "std dev",  # sigma, just in case
+    "\u00b1": "+/-",
+}
+
+
+def _pdf_safe(text: str) -> str:
+    for bad, good in _UNICODE_REPLACEMENTS.items():
+        text = text.replace(bad, good)
+    # final safety net: drop anything else outside latin-1 rather than crash
+    return text.encode("latin-1", errors="replace").decode("latin-1")
 
 
 def build_pdf_report(kpis: dict, insights: dict, output_path: str = "outputs/sales_report.pdf") -> str:
