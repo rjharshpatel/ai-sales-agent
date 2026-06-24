@@ -1,10 +1,13 @@
 # AI Sales Data Analyst Agent
 
+**Built by Harsh Raj**
+
 An autonomous pipeline that takes a raw daily sales CSV and produces cleaned
 data, KPIs, AI-generated business insights, an interactive dashboard, and a
 downloadable PDF report — with zero manual analysis steps.
 
-**Live demo:** _(add your Streamlit Cloud URL here after deploying — Step 4 below)_
+**Live demo:** [ai-sales-agent-gytf7zieaa8xczwcxkguwh.streamlit.app](https://ai-sales-agent-gytf7zieaa8xczwcxkguwh.streamlit.app/)
+**Source:** [github.com/rjharshpatel/ai-sales-agent](https://github.com/rjharshpatel/ai-sales-agent)
 
 ## Architecture
 
@@ -35,7 +38,7 @@ Interactive Filters (app.py)
     │
     ▼
 AI Insight Generation (ai_insights.py)
-    - Claude API narrates the KPI summary, including detected anomalies
+    - The AI provider narrates the KPI summary, including detected anomalies
     - Rule-based fallback if no API key / call fails (demo never breaks)
     │
     ▼
@@ -61,7 +64,7 @@ ai-sales-agent/
 ├── app.py                  # Streamlit dashboard (main entry point)
 ├── sales_engine.py          # ETL, cleaning, KPI + anomaly calculation (no UI deps)
 ├── schema_mapper.py         # Flexible column auto-detection for any sales CSV
-├── ai_insights.py           # Claude API call + rule-based fallback
+├── ai_insights.py           # AI API call + rule-based fallback
 ├── report_builder.py        # PDF generation (Unicode-safe)
 ├── generate_sample_data.py  # Creates the bundled demo dataset
 ├── data/sales_data.csv      # Demo dataset (generated)
@@ -80,23 +83,32 @@ streamlit run app.py
 
 Open the URL it prints (usually `http://localhost:8501`). Check
 **"Use demo dataset"** in the sidebar to see it work immediately, or upload
-your own CSV with these columns:
+your own sales CSV.
 
-```
-OrderDate, Product, Region, SalesRep, Quantity, UnitPrice, Revenue
-```
+Columns are **auto-detected** — names like `Date`, `Transaction Date`, or
+`Order Date` are all recognized as the order date, and similar synonym
+matching applies to product, region, sales rep, quantity, and price columns.
+If `Revenue` isn't present, it's calculated automatically as
+`Quantity × UnitPrice`. If a column genuinely can't be identified, the app
+shows a short form asking you to pick the matching column manually — it
+won't just fail.
 
 To enable real AI insights instead of the rule-based fallback, either:
-- paste your Anthropic API key into the sidebar field at runtime, or
+- paste your AI provider's API key into the sidebar field at runtime, or
 - create `.streamlit/secrets.toml` (copy from the `.example` file) with
-  `ANTHROPIC_API_KEY = "sk-ant-..."`
+  `ANTHROPIC_API_KEY = "your-key-here"`
 
-Get a key at [console.anthropic.com](https://console.anthropic.com).
+(The code currently calls the Anthropic API — get a key at
+[console.anthropic.com](https://console.anthropic.com) — but `ai_insights.py`
+is a self-contained module, so you can swap it for any other provider's API
+without touching the rest of the app.)
 
 ## Deploy it live (Streamlit Community Cloud — free)
 
 This is what makes it "live on anyone's device" — a public URL, no install
 required for whoever you share it with.
+
+### First-time deployment
 
 **Step 1 — Push to GitHub**
 ```bash
@@ -105,7 +117,7 @@ git init
 git add .
 git commit -m "AI Sales Data Analyst Agent"
 git branch -M main
-git remote add origin https://github.com/<your-username>/ai-sales-agent.git
+git remote add origin https://github.com/rjharshpatel/ai-sales-agent.git
 git push -u origin main
 ```
 (`.gitignore` already excludes secrets and generated PDFs — don't remove that.)
@@ -124,7 +136,26 @@ git push -u origin main
 **Step 4 — Share the link**
 Streamlit gives you a URL like `https://your-app-name.streamlit.app`. Anyone
 with that link gets the live app — no Python, no install, works on phone or
-laptop. Put this URL in your resume/portfolio and at the top of this README.
+laptop.
+
+### Updating an already-deployed app
+
+Once deployed, you don't repeat any of the steps above. Just push new
+commits — Streamlit Cloud watches the repo and auto-redeploys within about
+a minute:
+```bash
+git add .
+git commit -m "describe what changed"
+git push
+```
+If `git push` is rejected with "fetch first," someone (or Streamlit's own
+devcontainer setup) added something to the GitHub repo that your local copy
+doesn't have yet. Run `git pull --no-edit` to merge it in, then `git push`
+again — this is normal and doesn't lose any of your changes.
+
+To confirm the update went live, refresh the app URL and check for whatever
+changed, or open [share.streamlit.io](https://share.streamlit.io), select
+the app, and check its log panel for "Updating..." → "Running".
 
 ## Email feature (optional)
 
@@ -163,3 +194,10 @@ Ideas if you want to keep building once this works:
   "automation" rather than on-demand.
 - Add authentication (Streamlit supports `streamlit-authenticator`) if you
   want to gate access before sharing the link publicly.
+
+---
+
+**Author:** Harsh Raj
+This project was built as part of an ongoing portfolio focused on data
+analytics, automation, and AI integration — alongside a parallel Hospital ER
+analytics project (MySQL + Power BI).
